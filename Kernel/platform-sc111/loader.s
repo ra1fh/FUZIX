@@ -43,8 +43,13 @@ start:
 	; because of the FFFE/FFFF thing.
 
 	ld sp, #0xFE00
+
+	call iochange		; change I/O base if needed, result in D/E
+
 	ld hl,#hello
 	call serstr
+
+	call ioprint		; print old and new I/O base, args in D/E
 
 	in0 a,(MMU_BBR)
 	call outhex
@@ -154,8 +159,106 @@ ocloop_sio:
 	out0 (ASCI_TDR0),a
 	ret
 
+;
+; Change current I/O base if needed
+;
+; returns: D = 0|1 to indicate I/O base has been detected
+;	   E = detected SCM I/O base
+iochange:
+	call iodetect   	; detect current I/O base, result in D/E
+	bit 0, d		; check flag in D (I/O base has been found)
+	ret z			; without a detected I/O base we do nothing
+	ld b, #Z180_IO_BASE	; load desired I/O base into B
+	ld a, e			; load detected I/O base into A
+	cp b			; compare with desired I/O base in B
+	ret z			; do nothing if I/O base is as desired
+00$:	cp #0x00		; if (found IO base == 0x00)
+	jp nz, 40$		; continue when no match
+	out0 (0x3F), b		; set desired I/O base to current ICR location
+	ret
+40$:	cp #0x40		; else if (found I/O base == 0x40)
+	jp nz, 80$		; continue when no match
+	out0 (0x7F), b		; set desired I/O base to current ICR location
+	ret
+80$:	cp #0x80		; else if (found I/O base == 0x80)
+	jp nz, C0$		; continue when no match
+	out0 (0xBF), b		; set desired I/O base to current ICR location
+	ret
+C0$:	out0 (0xFF), b		; else // found I/O base must be 0xC0
+	ret
+	ret
+
+;
+; Look at SCM CP/M Loader code fragment that does the MMU setup. That
+; code uses internal I/O registers, which reveals the current I/O base
+; and ICR location
+;
+; This is the SCM 1.0 CP/M loader fragment with I/O base 0x40:
+;
+;     0x80b7  ed 39 79  OUT0 (0x79),A
+;
+; This is the SCM 1.3 CP/M loader fragment with I/O base 0xC0:
+;
+;     0x80b7  ed 39 f9  OUT0 (0xf9),A
+;
+; returns: D = 0|1 to indicate I/O base has been detected
+;	   E = detected SCM I/O base
+iodetect:
+	ld de, #0x0000		; initialize return values
+	ld hl, #0x80B7		; pointer to first byte of out0 instruction
+	ld a, (hl)		; load first instruction byte into A
+	cp #0xED		; compare with 0xed (out0 opcode prefix)
+	ret nz			; no match return
+	inc hl			; increment pointer
+	ld a, (hl)		; load second instruction by into A
+	cp #0x39		; compare with 0x39 (out0 opcode)
+	ret nz			; no match return
+	inc hl			; increment pointer
+	ld c, (hl)		; load found I/O register value into C
+	ld a, c			; copy found I/O register value into A
+	and #0x3F		; mask register numer
+	cp #0x39		; check for register offset 0x39
+	ret nz			; no match return
+	ld a, c
+	and #0xC0
+	ld d, #0x01
+	ld e, a
+	ret
+
+;
+; Print detected I/O base and Fuzix I/O base like this:
+; SCM IO=0xC0 FUZIX IO=0x40
+;
+; input: D = 0|1 to indicate I/O base has been detected
+;	 E = detected SCM I/O base
+ioprint:
+	ld hl, #scmio
+	call serstr
+	bit 0, d		; check flag in D (I/O base has been found)
+	jr nz, gotio$		; when I/O base has not changed, skip printing old I/O base
+	ld hl, #noio		; print '??'
+	call serstr
+	jr fzxio$
+gotio$:	ld a, e			; load old I/O base value into a
+	call outhex
+fzxio$:	ld hl, #fuzixio
+	call serstr
+	ld a, #Z180_IO_BASE	; print new I/O base with label
+	call outhex
+	ld hl, #newline
+	call serstr
+	ret
+
 
 hello:
-	.asciz 'SC111 FUZIX LOADER 0.1\r\n\r\n'
+	.asciz 'SC111 FUZIX LOADER 0.1\r\n'
+newline:
+	.asciz '\r\n\r\n'
+scmio:
+	.asciz 'SCM IO=0x'
+fuzixio:
+	.asciz ' FUZIX IO=0x'
+noio:
+	.asciz '??'
 gogogo:
 	.asciz '\r\nExecuting FUZIX...\r\n'
